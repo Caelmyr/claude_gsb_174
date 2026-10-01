@@ -18,8 +18,9 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 
 from backend.common import constants as C
 from backend.common.config import ClusterConfig, ConfigManager, JobDefaults
+from backend.common.eventbus import EventBus
 from backend.common.logbus import LogBus
-from backend.common.models import Job
+from backend.common.models import Job, WorkerRecord
 from backend.common.storage import Storage, list_files, read_json
 from backend.master.fault_tolerance import FaultTolerance
 from backend.master.job_manager import JobManager
@@ -45,12 +46,15 @@ class Master:
         self.config = (config or self.config_manager.load_cluster()).validated()
 
         self.logbus = LogBus(self.storage)
+        self.eventbus = EventBus(self.storage)
         self.job_manager = JobManager(self.storage, self.config, self.logbus)
         self.registry = WorkerRegistry(self.storage, self.config)
         self.metrics = Metrics(self.storage)
         self.shuffle = ShuffleCoordinator(self.storage, self.job_manager, self.registry, self.logbus)
-        self.fault_tolerance = FaultTolerance(self.storage, self.job_manager, self.config, self.logbus)
-        self.registry.on_death = self.fault_tolerance.handle_worker_death
+        self.fault_tolerance = FaultTolerance(
+            self.storage, self.job_manager, self.config, self.logbus, self.eventbus,
+        )
+        self.registry.on_lost = self._record_worker_lost
         self.scheduler = Scheduler(
             self.storage, self.job_manager, self.registry, self.shuffle,
             self.fault_tolerance, self.metrics, self.config, self.logbus,
@@ -91,6 +95,7 @@ class Master:
                          self._job_results_download, methods=["GET"])
         app.add_url_rule("/api/workers", "workers", self._workers, methods=["GET"])
         app.add_url_rule("/api/workers/<worker_id>/metrics", "worker_metrics", self._worker_metrics, methods=["GET"])
+        app.add_url_rule("/api/cluster/events", "cluster_events", self._cluster_events, methods=["GET"])
         app.add_url_rule("/api/cluster/metrics", "cluster_metrics", self._cluster_metrics, methods=["GET"])
         app.add_url_rule("/api/config", "config", self._config, methods=["GET", "PUT"])
         app.add_url_rule("/api/config/defaults", "config_defaults", self._config_defaults, methods=["GET", "PUT"])
@@ -311,6 +316,24 @@ class Master:
     def _workers(self):
         return jsonify(self.registry.summary())
 
+    def _cluster_events(self):
+        try:
+            limit = max(1, min(int(request.args.get("limit", 1000)), 5000))
+        except ValueError:
+            limit = 1000
+        events = self.eventbus.list_events(
+            kind=request.args.get("kind", ""),
+            worker_id=request.args.get("worker_id", ""),
+            job_id=request.args.get("job_id", ""),
+            search=request.args.get("q", ""),
+            limit=limit,
+        )
+        return jsonify({
+            "events": events,
+            "total": len(events),
+            "kinds": C.CLUSTER_EVENT_KINDS,
+        })
+
     def _worker_metrics(self, worker_id: str):
         return jsonify(self.metrics.worker_metrics(worker_id))
 
@@ -345,10 +368,41 @@ class Master:
         body = request.get_json(silent=True) or {}
         if "worker_id" not in body:
             return jsonify({"ok": False, "error": "missing worker_id"}), 400
-        worker = self.registry.register(body)
-        self.logbus.info("", f"worker {worker.name} registered ({worker.host}:{worker.port})",
-                         task_id="cluster", worker_id=worker.worker_id)
+        worker, was_new = self.registry.register(body)
+        if was_new:
+            kind = C.EVENT_NODE_REGISTERED
+            message = f"worker {worker.name} registered ({worker.host}:{worker.port})"
+        else:
+            kind = C.EVENT_NODE_REREGISTERED
+            message = f"worker {worker.name} reregistered ({worker.host}:{worker.port})"
+        self.eventbus.emit(
+            kind,
+            message,
+            worker_id=worker.worker_id,
+            detail={
+                "name": worker.name,
+                "host": worker.host,
+                "port": worker.port,
+                "cpu_cores": worker.cpu_cores,
+                "mem_total_mb": worker.mem_total_mb,
+                "exec_mode": worker.exec_mode,
+                "was_new": was_new,
+            },
+        )
         return jsonify({"ok": True, "worker_id": worker.worker_id})
+
+    def _record_worker_lost(self, worker: WorkerRecord) -> None:
+        self.eventbus.emit(
+            C.EVENT_NODE_LOST,
+            f"worker {worker.name} lost contact after heartbeat timeout",
+            level=C.LOG_WARN,
+            worker_id=worker.worker_id,
+            detail={
+                "name": worker.name,
+                "last_heartbeat_ms": worker.last_heartbeat_ms,
+                "timeout_sec": self.config.heartbeat_timeout_sec,
+            },
+        )
 
     def _worker_heartbeat(self):
         body = request.get_json(silent=True) or {}

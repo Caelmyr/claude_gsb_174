@@ -36,7 +36,7 @@ class LogBus:
         **extra: Any,
     ) -> dict:
         record: dict[str, Any] = {
-            "ts": now_ms(),
+            "ts_ms": now_ms(),
             "level": level,
             "stage": stage,
             "task_id": task_id,
@@ -105,7 +105,7 @@ class LogBus:
                 rec.setdefault("task_id", f_task)
                 records.append(rec)
 
-        records.sort(key=lambda r: r.get("ts_ms", 0))
+        records.sort(key=lambda r: r.get("ts_ms", r.get("ts", 0)))
         total = len(records)
         return {
             "total": total,

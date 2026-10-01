@@ -64,6 +64,23 @@ WORKER_ALIVE = "alive"
 WORKER_DEAD = "dead"
 
 # ---------------------------------------------------------------------------
+# Cluster-level events (not bound to a single job)
+# ---------------------------------------------------------------------------
+EVENT_NODE_REGISTERED = "node_registered"
+EVENT_NODE_REREGISTERED = "node_reregistered"
+EVENT_NODE_LOST = "node_lost"
+EVENT_NODE_RECLAIMED = "node_reclaimed"
+EVENT_TASK_REASSIGNED = "task_reassigned"
+
+CLUSTER_EVENT_KINDS = [
+    EVENT_NODE_REGISTERED,
+    EVENT_NODE_REREGISTERED,
+    EVENT_NODE_LOST,
+    EVENT_NODE_RECLAIMED,
+    EVENT_TASK_REASSIGNED,
+]
+
+# ---------------------------------------------------------------------------
 # Log levels
 # ---------------------------------------------------------------------------
 LOG_DEBUG = "DEBUG"

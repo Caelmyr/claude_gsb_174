@@ -10,7 +10,10 @@
   <header id="app-nav"></header>
   <main class="page">
     <h1 class="page-title">日志聚合与搜索 <span>Log Aggregation &amp; Search</span></h1>
-    <p class="page-desc">跨 Worker 聚合的结构化日志，按关键词/阶段/级别过滤。Aggregated logs across workers, filtered by keyword / stage / level.</p>
+    <div class="flex between mb">
+      <p class="page-desc" style="margin:0">跨 Worker 聚合的作业结构化日志，按关键词/阶段/级别过滤。Job-scoped logs across workers. Cluster lifecycle events are on the events page.</p>
+      <a class="btn small" href="cluster-events.html">集群事件 Cluster events →</a>
+    </div>
 
     <div class="flex wrap mb">
       <div id="job-picker" style="min-width:260px"></div>

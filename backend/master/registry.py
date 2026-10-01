@@ -24,10 +24,12 @@ class WorkerRegistry:
         storage: Storage,
         config,
         on_death: Optional[Callable[[WorkerRecord], None]] = None,
+        on_lost: Optional[Callable[[WorkerRecord], None]] = None,
     ) -> None:
         self.storage = storage
         self.config = config
         self.on_death = on_death
+        self.on_lost = on_lost
         self._workers: dict[str, WorkerRecord] = {}
         self._lock = threading.RLock()
         self._load()
@@ -45,10 +47,16 @@ class WorkerRegistry:
         self.storage.write(worker.to_dict(), "registry", "workers", f"{worker.worker_id}.json")
 
     # ------------------------------------------------------------------
-    def register(self, payload: dict) -> WorkerRecord:
+    def register(self, payload: dict) -> tuple[WorkerRecord, bool]:
+        """Register or refresh a worker.
+
+        Returns ``(worker, was_new)`` so callers can distinguish a first
+        registration from a worker rejoining after a restart / lost heartbeat.
+        """
         wid = payload["worker_id"]
         with self._lock:
             existing = self._workers.get(wid)
+            was_new = existing is None
             if existing:
                 existing.name = payload.get("name", existing.name)
                 existing.host = payload.get("host", existing.host)
@@ -71,7 +79,7 @@ class WorkerRegistry:
                 )
                 self._workers[wid] = worker
             self._save(worker)
-            return worker
+            return worker, was_new
 
     def heartbeat(self, payload: dict) -> Optional[WorkerRecord]:
         wid = payload.get("worker_id")
@@ -119,7 +127,7 @@ class WorkerRegistry:
 
     def reap(self) -> list[WorkerRecord]:
         """Mark timed-out workers dead and return the newly-dead list."""
-        timeout_ms = int(self.config.heartbeat_timeout_sec * 1000 * 60)
+        timeout_ms = int(self.config.heartbeat_timeout_sec * 1000)
         now = now_ms()
         newly_dead: list[WorkerRecord] = []
         with self._lock:
@@ -129,6 +137,10 @@ class WorkerRegistry:
                     self._save(worker)
                     newly_dead.append(worker)
         for worker in newly_dead:
+            # The heartbeat loss is observed by the registry first. Resource
+            # reaping and task recovery run after this callback.
+            if self.on_lost is not None:
+                self.on_lost(worker)
             if self.on_death is not None:
                 self.on_death(worker)
         return newly_dead

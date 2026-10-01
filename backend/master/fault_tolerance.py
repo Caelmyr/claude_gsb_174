@@ -19,6 +19,7 @@ import statistics
 from typing import Optional
 
 from backend.common import constants as C
+from backend.common.eventbus import EventBus
 from backend.common.ids import new_id
 from backend.common.jsonutil import now_ms
 from backend.common.logbus import LogBus
@@ -34,11 +35,13 @@ class FaultTolerance:
         job_manager: JobManager,
         config,
         logbus: LogBus,
+        eventbus: Optional[EventBus] = None,
     ) -> None:
         self.storage = storage
         self.job_manager = job_manager
         self.config = config
         self.logbus = logbus
+        self.eventbus = eventbus
 
     # ------------------------------------------------------------------
     def _record(self, job: Job, kind: str, message: str, task: Optional[Task] = None,
@@ -92,7 +95,20 @@ class FaultTolerance:
         return False
 
     def handle_worker_death(self, worker: WorkerRecord) -> int:
-        """Reassign every in-flight task on a dead worker. Returns count."""
+        """Reclaim a lost worker and reassign every in-flight task. Returns count."""
+        if self.eventbus is not None:
+            self.eventbus.emit(
+                C.EVENT_NODE_RECLAIMED,
+                f"worker {worker.name} reclaimed after heartbeat timeout",
+                level=C.LOG_WARN,
+                worker_id=worker.worker_id,
+                detail={
+                    "name": worker.name,
+                    "last_heartbeat_ms": worker.last_heartbeat_ms,
+                    "timeout_sec": self.config.heartbeat_timeout_sec,
+                },
+            )
+
         reassigned = 0
         for job in self.job_manager.list_jobs():
             if job.is_terminal:
@@ -104,6 +120,21 @@ class FaultTolerance:
                         f"worker {worker.name} lost; reassigning task {task.task_id}",
                         task=task, worker_id=worker.worker_id,
                     )
+                    if self.eventbus is not None:
+                        self.eventbus.emit(
+                            C.EVENT_TASK_REASSIGNED,
+                            f"task {task.task_id} from job {job.name} reassigned from {worker.name}",
+                            level=C.LOG_WARN,
+                            worker_id=worker.worker_id,
+                            job_id=job.job_id,
+                            task_id=task.task_id,
+                            detail={
+                                "kind": task.kind,
+                                "index": task.index,
+                                "from_status": task.status,
+                                "previous_attempts": task.attempts,
+                            },
+                        )
                     self.job_manager.update_task(
                         job.job_id, task.task_id,
                         status=C.TASK_RETRYING, worker_id=None,

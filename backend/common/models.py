@@ -194,6 +194,31 @@ class FaultEvent:
 
 
 # ---------------------------------------------------------------------------
+# Cluster-level event (independent of a particular job)
+# ---------------------------------------------------------------------------
+@dataclass
+class ClusterEvent:
+    event_id: str
+    kind: str
+    message: str
+    created_ms: int = 0
+    seq: int = 0
+    level: str = C.LOG_INFO
+    worker_id: str = ""
+    job_id: str = ""
+    task_id: str = ""
+    detail: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ClusterEvent":
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+
+# ---------------------------------------------------------------------------
 # Metric sample (appended to a JSONL metrics file)
 # ---------------------------------------------------------------------------
 @dataclass
