@@ -78,14 +78,11 @@ class Scheduler:
 
     # ------------------------------------------------------------------
     def tick(self) -> None:
-        # 1. Reap dead workers and reassign their tasks (on a coarser cadence).
+        # 1. Reap dead workers; the registry's on_death callback reassigns
+        #    their in-flight tasks and records the cluster events.
         self._tick_count = getattr(self, "_tick_count", 0) + 1
         if self._tick_count % 5 == 0:
-            for worker in self.registry.reap():
-                count = self.fault_tolerance.handle_worker_death(worker)
-                if count:
-                    self.logbus.warn("", f"worker {worker.name} reaped; {count} tasks reassigned",
-                                     task_id="cluster")
+            self.registry.reap()
 
         # 2. Advance each active job.
         for job in self.job_manager.list_jobs():

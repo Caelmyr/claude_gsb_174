@@ -92,25 +92,46 @@ class FaultTolerance:
         return False
 
     def handle_worker_death(self, worker: WorkerRecord) -> int:
-        """Reassign every in-flight task on a dead worker. Returns count."""
-        reassigned = 0
-        for job in self.job_manager.list_jobs():
-            if job.is_terminal:
-                continue
-            for task in self.job_manager.tasks_for(job.job_id):
-                if task.worker_id == worker.worker_id and task.status in C.TASK_ACTIVE_STATES:
-                    self._record(
-                        job, "worker_dead",
-                        f"worker {worker.name} lost; reassigning task {task.task_id}",
-                        task=task, worker_id=worker.worker_id,
-                    )
-                    self.job_manager.update_task(
-                        job.job_id, task.task_id,
-                        status=C.TASK_RETRYING, worker_id=None,
-                        error=f"worker {worker.name} died", retry_after_ms=0,
-                    )
-                    reassigned += 1
-        return reassigned
+        """Reassign every in-flight task on a dead worker. Returns count.
+
+        The cluster-level ``worker_dead`` event is emitted *before* the
+        per-task ``task_reassigned`` events so the events timeline reads in
+        the order things actually happened (node lost -> its tasks moved).
+        """
+        affected: list[tuple[Job, Task]] = [
+            (job, task)
+            for job in self.job_manager.list_jobs() if not job.is_terminal
+            for task in self.job_manager.tasks_for(job.job_id)
+            if task.worker_id == worker.worker_id and task.status in C.TASK_ACTIVE_STATES
+        ]
+        self.logbus.emit_cluster(
+            C.EVENT_WORKER_DEAD,
+            f"worker {worker.name} lost (heartbeat timeout); reaped, "
+            f"{len(affected)} in-flight task(s) reassigned",
+            level=C.LOG_WARN,
+            worker_id=worker.worker_id, worker_name=worker.name,
+            reassigned=len(affected),
+        )
+        for job, task in affected:
+            self._record(
+                job, "worker_dead",
+                f"worker {worker.name} lost; reassigning task {task.task_id}",
+                task=task, worker_id=worker.worker_id,
+            )
+            self.job_manager.update_task(
+                job.job_id, task.task_id,
+                status=C.TASK_RETRYING, worker_id=None,
+                error=f"worker {worker.name} died", retry_after_ms=0,
+            )
+            self.logbus.emit_cluster(
+                C.EVENT_TASK_REASSIGNED,
+                f"task {task.task_id} of job {job.name} reassigned off dead "
+                f"worker {worker.name}",
+                level=C.LOG_WARN,
+                worker_id=worker.worker_id, worker_name=worker.name,
+                job_id=job.job_id, task_id=task.task_id,
+            )
+        return len(affected)
 
     def find_stragglers(self, job: Job) -> list[Task]:
         """Tasks running far longer than the median, still awaiting a duplicate."""

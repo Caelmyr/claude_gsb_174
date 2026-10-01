@@ -51,6 +51,8 @@ class Master:
         self.shuffle = ShuffleCoordinator(self.storage, self.job_manager, self.registry, self.logbus)
         self.fault_tolerance = FaultTolerance(self.storage, self.job_manager, self.config, self.logbus)
         self.registry.on_death = self.fault_tolerance.handle_worker_death
+        self.registry.on_register = self.logbus.cluster_worker_registered
+        self.registry.on_recover = self.logbus.cluster_worker_recovered
         self.scheduler = Scheduler(
             self.storage, self.job_manager, self.registry, self.shuffle,
             self.fault_tolerance, self.metrics, self.config, self.logbus,
@@ -92,6 +94,7 @@ class Master:
         app.add_url_rule("/api/workers", "workers", self._workers, methods=["GET"])
         app.add_url_rule("/api/workers/<worker_id>/metrics", "worker_metrics", self._worker_metrics, methods=["GET"])
         app.add_url_rule("/api/cluster/metrics", "cluster_metrics", self._cluster_metrics, methods=["GET"])
+        app.add_url_rule("/api/cluster/events", "cluster_events", self._cluster_events, methods=["GET"])
         app.add_url_rule("/api/config", "config", self._config, methods=["GET", "PUT"])
         app.add_url_rule("/api/config/defaults", "config_defaults", self._config_defaults, methods=["GET", "PUT"])
 
@@ -317,6 +320,17 @@ class Master:
     def _cluster_metrics(self):
         return jsonify(self.metrics.cluster_metrics(self.registry.all()))
 
+    def _cluster_events(self):
+        result = self.logbus.query_cluster(
+            search=request.args.get("q", ""),
+            kind=request.args.get("kind", ""),
+            worker=request.args.get("worker", ""),
+            level=request.args.get("level", ""),
+            limit=int(request.args.get("limit", 500)),
+        )
+        result["kind_labels"] = C.EVENT_KIND_LABELS
+        return jsonify(result)
+
     def _config(self):
         if request.method == "PUT":
             body = request.get_json(silent=True) or {}
@@ -346,8 +360,6 @@ class Master:
         if "worker_id" not in body:
             return jsonify({"ok": False, "error": "missing worker_id"}), 400
         worker = self.registry.register(body)
-        self.logbus.info("", f"worker {worker.name} registered ({worker.host}:{worker.port})",
-                         task_id="cluster", worker_id=worker.worker_id)
         return jsonify({"ok": True, "worker_id": worker.worker_id})
 
     def _worker_heartbeat(self):

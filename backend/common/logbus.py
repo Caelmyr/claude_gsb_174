@@ -6,6 +6,11 @@ records are appended atomically (via ``storage.append_jsonl``) many workers and
 the master can emit concurrently without corruption.  ``query`` streams every
 file under a job's log directory and filters, so the log-search page has a
 single, simple backend.
+
+Cluster-level events (node registered / lost / reaped / recovered, tasks
+reassigned) do not belong to any job, so they are appended to a single
+cluster-wide ``cluster/events.jsonl`` instead; ``query_cluster`` powers the
+cluster-events timeline page.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ class LogBus:
         **extra: Any,
     ) -> dict:
         record: dict[str, Any] = {
-            "ts": now_ms(),
+            "ts_ms": now_ms(),
             "level": level,
             "stage": stage,
             "task_id": task_id,
@@ -103,6 +108,9 @@ class LogBus:
                         continue
                 rec.setdefault("stage", f_stage)
                 rec.setdefault("task_id", f_task)
+                # Older shards stamped the timestamp as "ts"; normalise so
+                # sorting and the frontend see one field.
+                rec.setdefault("ts_ms", rec.get("ts", 0))
                 records.append(rec)
 
         records.sort(key=lambda r: r.get("ts_ms", 0))
@@ -114,10 +122,112 @@ class LogBus:
             "records": records[:limit],
         }
 
+    # -- cluster events -------------------------------------------------
+    def _cluster_log_path(self) -> str:
+        return self.storage.path("cluster", "events.jsonl")
+
+    def emit_cluster(
+        self,
+        kind: str,
+        message: str,
+        level: str = C.LOG_INFO,
+        worker_id: str = "",
+        worker_name: str = "",
+        job_id: str = "",
+        task_id: str = "",
+        **extra: Any,
+    ) -> dict:
+        """Append one cluster-level event (node lifecycle / reassignment).
+
+        These events are job-independent, so they live in a single
+        cluster-wide JSONL log that the events page queries as a timeline.
+        """
+        record: dict[str, Any] = {
+            "ts_ms": now_ms(),
+            "kind": kind,
+            "level": level,
+            "message": message,
+            "worker_id": worker_id,
+            "worker_name": worker_name,
+            "job_id": job_id,
+            "task_id": task_id,
+        }
+        record.update(extra)
+        self.storage.append(record, "cluster", "events.jsonl")
+        return record
+
+    # Convenience emitters for node lifecycle transitions; the Master wires
+    # them straight into the registry's on_register / on_recover callbacks.
+    def cluster_worker_registered(self, worker: Any, is_new: bool, was_dead: bool) -> dict:
+        if is_new:
+            kind = C.EVENT_WORKER_REGISTERED
+            msg = f"worker {worker.name} registered ({worker.host}:{worker.port})"
+        elif was_dead:
+            kind = C.EVENT_WORKER_RECOVERED
+            msg = f"worker {worker.name} re-registered after being marked dead"
+        else:
+            kind = C.EVENT_WORKER_REGISTERED
+            msg = f"worker {worker.name} re-registered ({worker.host}:{worker.port})"
+        return self.emit_cluster(kind, msg, worker_id=worker.worker_id,
+                                 worker_name=worker.name, rejoin=not is_new)
+
+    def cluster_worker_recovered(self, worker: Any) -> dict:
+        return self.emit_cluster(
+            C.EVENT_WORKER_RECOVERED,
+            f"worker {worker.name} recovered (heartbeat resumed)",
+            worker_id=worker.worker_id, worker_name=worker.name,
+        )
+
+    def query_cluster(
+        self,
+        search: str = "",
+        kind: str = "",
+        worker: str = "",
+        level: str = "",
+        limit: int = 500,
+    ) -> dict:
+        """Return matching cluster events in chronological order.
+
+        When more than ``limit`` events match, the *most recent* ones are
+        kept — the timeline is for reviewing what just happened.
+        """
+        needle = (search or "").lower()
+        worker_needle = (worker or "").lower()
+        records: list[dict] = []
+        kinds: set[str] = set()
+        total_scanned = 0
+        for rec in read_jsonl_stream(self._cluster_log_path()):
+            total_scanned += 1
+            rec_kind = rec.get("kind", "")
+            if rec_kind:
+                kinds.add(rec_kind)
+            if kind and rec_kind != kind:
+                continue
+            if level and rec.get("level") != level:
+                continue
+            if worker_needle:
+                hay = f"{rec.get('worker_id', '')} {rec.get('worker_name', '')}".lower()
+                if worker_needle not in hay:
+                    continue
+            if needle and needle not in _lower_record(rec):
+                continue
+            records.append(rec)
+
+        records.sort(key=lambda r: r.get("ts_ms", 0))
+        total = len(records)
+        if limit and total > limit:
+            records = records[-limit:]
+        return {
+            "total": total,
+            "scanned": total_scanned,
+            "kinds": sorted(kinds),
+            "records": records,
+        }
+
 
 def _lower_record(rec: dict) -> str:
     """Cheap case-insensitive haystack over a record's textual fields."""
     parts = [str(rec.get("message", ""))]
-    for key in ("level", "stage", "task_id", "worker_id"):
+    for key in ("level", "stage", "task_id", "worker_id", "kind", "worker_name", "job_id"):
         parts.append(str(rec.get(key, "")))
     return " ".join(parts).lower()

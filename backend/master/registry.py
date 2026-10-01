@@ -24,10 +24,17 @@ class WorkerRegistry:
         storage: Storage,
         config,
         on_death: Optional[Callable[[WorkerRecord], None]] = None,
+        on_register: Optional[Callable[[WorkerRecord, bool, bool], None]] = None,
+        on_recover: Optional[Callable[[WorkerRecord], None]] = None,
     ) -> None:
         self.storage = storage
         self.config = config
         self.on_death = on_death
+        # ``on_register(worker, is_new, was_dead)`` and ``on_recover(worker)``
+        # fire on the corresponding state transitions so the Master can record
+        # cluster-level events exactly where they happen.
+        self.on_register = on_register
+        self.on_recover = on_recover
         self._workers: dict[str, WorkerRecord] = {}
         self._lock = threading.RLock()
         self._load()
@@ -49,6 +56,8 @@ class WorkerRegistry:
         wid = payload["worker_id"]
         with self._lock:
             existing = self._workers.get(wid)
+            is_new = existing is None
+            was_dead = bool(existing) and not existing.is_alive
             if existing:
                 existing.name = payload.get("name", existing.name)
                 existing.host = payload.get("host", existing.host)
@@ -71,14 +80,18 @@ class WorkerRegistry:
                 )
                 self._workers[wid] = worker
             self._save(worker)
-            return worker
+        if self.on_register is not None:
+            self.on_register(worker, is_new, was_dead)
+        return worker
 
     def heartbeat(self, payload: dict) -> Optional[WorkerRecord]:
         wid = payload.get("worker_id")
+        recovered = False
         with self._lock:
             worker = self._workers.get(wid)
             if worker is None:
                 return None
+            recovered = not worker.is_alive
             worker.status = C.WORKER_ALIVE
             worker.last_heartbeat_ms = now_ms()
             worker.cpu_percent = float(payload.get("cpu_percent", worker.cpu_percent))
@@ -87,7 +100,9 @@ class WorkerRegistry:
             worker.running_tasks = int(payload.get("running_tasks", worker.running_tasks))
             worker.queued_tasks = int(payload.get("queued_tasks", worker.queued_tasks))
             self._save(worker)
-            return worker
+        if recovered and self.on_recover is not None:
+            self.on_recover(worker)
+        return worker
 
     def task_finished(self, worker_id: str, success: bool) -> None:
         with self._lock:

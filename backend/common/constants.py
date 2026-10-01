@@ -73,6 +73,28 @@ LOG_ERROR = "ERROR"
 LOG_LEVELS = [LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR]
 
 # ---------------------------------------------------------------------------
+# Cluster event kinds (node lifecycle + reassignment, stored cluster-wide)
+# ---------------------------------------------------------------------------
+EVENT_WORKER_REGISTERED = "worker_registered"    # node joined the cluster
+EVENT_WORKER_DEAD = "worker_dead"                # heartbeat timeout -> reaped
+EVENT_WORKER_RECOVERED = "worker_recovered"      # dead node came back
+EVENT_TASK_REASSIGNED = "task_reassigned"        # in-flight task moved off a dead node
+
+CLUSTER_EVENT_KINDS = [
+    EVENT_WORKER_REGISTERED,
+    EVENT_WORKER_DEAD,
+    EVENT_WORKER_RECOVERED,
+    EVENT_TASK_REASSIGNED,
+]
+
+EVENT_KIND_LABELS = {
+    EVENT_WORKER_REGISTERED: "节点注册 Registered",
+    EVENT_WORKER_DEAD: "节点失联/回收 Dead",
+    EVENT_WORKER_RECOVERED: "节点恢复 Recovered",
+    EVENT_TASK_REASSIGNED: "任务改派 Reassigned",
+}
+
+# ---------------------------------------------------------------------------
 # Bilingual labels shared by the backend (also mirrored in the frontend)
 # ---------------------------------------------------------------------------
 STATE_LABELS = {

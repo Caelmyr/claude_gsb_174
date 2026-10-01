@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>集群事件 Cluster Events — 分布式 MapReduce</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header id="app-nav"></header>
+  <main class="page">
+    <h1 class="page-title">集群事件时间线 <span>Cluster Event Timeline</span></h1>
+    <p class="page-desc">节点注册 / 失联 / 回收 / 恢复与任务改派，按时间顺序统一查看。Node lifecycle and task reassignment events, in chronological order.</p>
+
+    <div class="flex wrap mb">
+      <select id="kind" style="max-width:190px">
+        <option value="">类型 Kind: 全部 All</option>
+      </select>
+      <select id="level" style="max-width:130px">
+        <option value="">级别 Level: 全部 All</option>
+        <option value="INFO">INFO</option>
+        <option value="WARN">WARN</option>
+        <option value="ERROR">ERROR</option>
+      </select>
+      <input id="worker" placeholder="节点 Worker…" style="max-width:170px">
+      <input id="search" placeholder="搜索关键词 Search…" style="max-width:220px">
+      <button class="btn small" id="refresh">刷新 Refresh</button>
+    </div>
+
+    <div class="stat-tiles" id="stats"></div>
+    <div class="card mt">
+      <div class="flex between mb">
+        <h2>事件时间线 <span class="sub">Event timeline</span></h2>
+        <span class="small muted" id="event-count"></span>
+      </div>
+      <div id="events"></div>
+    </div>
+  </main>
+  <script src="js/api.js"></script>
+  <script src="js/components.js"></script>
+  <script src="js/pages/events.js"></script>
+</body>
+</html>
